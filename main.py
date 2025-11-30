@@ -214,6 +214,7 @@ def auto_update_sheet():
     # Step B: Gemini Extraction
     print("Extracting with AI...")
     new_ipos = ai_extract_ipos(raw_text)
+    
     if not new_ipos or not isinstance(new_ipos, list):
          return {"status": "error", "message": "AI could not find structured data"}
 
@@ -228,17 +229,29 @@ def auto_update_sheet():
         if ipo.get('company_name', '').lower().strip() not in existing_names:
             rows_to_add.append(ipo)
     
-    # Step D: Save
+    # Step D: Save (WITH ERROR CHECKING)
     if rows_to_add:
         print(f"Adding {len(rows_to_add)} new IPOs...")
         try:
-            requests.post(IPO_SHEET_API, json=rows_to_add)
-            return {"status": "success", "added_count": len(rows_to_add), "new_data": rows_to_add}
+            # We use 'json=rows_to_add' to send the list properly
+            response = requests.post(IPO_SHEET_API, json=rows_to_add)
+            
+            # This line is the FIX: It will crash if Sheet.best returns an error
+            response.raise_for_status() 
+            
+            return {
+                "status": "success", 
+                "added_count": len(rows_to_add), 
+                "sheet_response": response.text,  # See exactly what Sheet.best said
+                "new_data": rows_to_add
+            }
+        except requests.exceptions.HTTPError as err:
+            # Now we will see the REAL error (e.g., 400 Bad Request, 402 Payment Required)
+            return {"status": "error", "message": f"Sheet API Error: {err}", "details": response.text}
         except Exception as e:
             return {"status": "error", "message": str(e)}
     else:
         return {"status": "success", "message": "Sheet is already up to date (No new IPOs found)."}
-
 @app.get("/analyze")
 def run_analysis_json():
     raw_data = get_sheet_data()
