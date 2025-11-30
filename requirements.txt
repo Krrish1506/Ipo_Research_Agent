@@ -6,3 +6,4 @@ google-generativeai
 html2pdf
 jinja2
 python-multipart
+beautifulsoup4

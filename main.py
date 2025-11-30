@@ -3,6 +3,7 @@ import json
 import requests
 import re
 import uvicorn
+from bs4 import BeautifulSoup
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
@@ -27,40 +28,85 @@ app = FastAPI()
 def get_sheet_data():
     """Reads data from your Google Sheet via Sheet.best"""
     if not IPO_SHEET_API:
-        return {"error": "IPO_SHEET_API not found in .env file"}
+        return []
     try:
         response = requests.get(IPO_SHEET_API)
         return response.json()
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        return []
 
 def clean_and_parse_json(text):
-    """Smartly extracts JSON from Gemini's response, ignoring extra chatter."""
+    """Smartly extracts JSON from Gemini's response."""
     try:
-        # 1. Try standard parsing first
+        # 1. Try direct parse
         return json.loads(text)
-    except json.JSONDecodeError:
+    except:
         pass
-
     try:
-        # 2. If that fails, look for the first '[' and last ']'
-        # This fixes issues where Gemini adds text before or after the JSON
+        # 2. Extract between [ ]
         match = re.search(r'\[.*\]', text, re.DOTALL)
         if match:
-            json_str = match.group(0)
-            return json.loads(json_str)
-    except Exception:
+            return json.loads(match.group(0))
+    except:
         pass
-        
-    # 3. Last resort cleanup (remove markdown tags manually)
     try:
+        # 3. Remove markdown
         clean_text = text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_text)
+    except:
+        return []
+
+def scrape_web_data():
+    """Fetches raw text from a reliable IPO news source."""
+    # We use a standard financial news page. You can change this URL to any IPO list page.
+    url = "https://ipowatch.in/upcoming-ipo-calendar-ipo-list/" 
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    try:
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # We grab the main table or content. 
+        # Limiting to first 10,000 chars prevents token overflow.
+        text_content = soup.get_text()[:10000]
+        return text_content
     except Exception as e:
-        return None
+        print(f"Scraping Error: {e}")
+        return ""
+
+def ai_extract_ipos(raw_text):
+    """Uses Gemini to convert messy web text into Sheet Rows."""
+    prompt = f"""
+    I have scraped this raw text from an IPO website:
+    {raw_text}
+
+    Task: Identify the upcoming or open IPOs.
+    Extract them into a JSON list matching these exact keys:
+    - company_name
+    - symbol (create a short 4-5 letter code if not found)
+    - ipo_date (YYYY-MM-DD format, estimate if needed)
+    - application_open (YYYY-MM-DD)
+    - application_close (YYYY-MM-DD)
+    - industry (guess based on name if not found)
+    - lot_size (number)
+    - price_band_low (number)
+    - price_band_high (number)
+    - gmp (Grey Market Premium as number, put 0 if not found)
+    - issue_price (use price_band_high if not confirmed)
+    - status (must be 'upcoming' or 'open')
+    - notes (short 1 sentence summary of hype/risk)
+
+    Return ONLY raw JSON. No markdown.
+    """
+    try:
+        response = model.generate_content(prompt)
+        return clean_and_parse_json(response.text)
+    except Exception as e:
+        print(f"Gemini Extraction Error: {e}")
+        return []
 
 def analyze_ipo(ipo_data):
-    """Sends IPO data to Gemini for a decision"""
+    """Analyzes the Sheet Data for Investment Decisions."""
     data_str = json.dumps(ipo_data)
     prompt = f"""
     You are a strict Financial Analyst AI. 
@@ -72,40 +118,21 @@ def analyze_ipo(ipo_data):
     3. Give a Score (0-100).
     
     Output Format:
-    Return ONLY a raw JSON list. 
-    Do not use Markdown. Do not add explanations outside the JSON.
-    Example:
-    [
-      {{
-        "company": "Name",
-        "decision": "APPLY",
-        "score": 90,
-        "reason": "High GMP"
-      }}
-    ]
+    Return ONLY a raw JSON list.
+    Keys: "company", "decision", "score", "reason"
     """
     try:
         response = model.generate_content(prompt)
-        text_response = response.text
-        
-        # Use our smart cleaner
-        parsed_data = clean_and_parse_json(text_response)
-        
-        if parsed_data:
-            return parsed_data
-        else:
-            return [{"company": "Error", "decision": "ERROR", "score": 0, "reason": "Could not parse Gemini response: " + text_response[:100]}]
-            
+        return clean_and_parse_json(response.text)
     except Exception as e:
         return [{"company": "Error", "decision": "ERROR", "score": 0, "reason": str(e)}]
 
 def generate_html_report(analysis_results):
-    """Converts JSON analysis into a Beautiful HTML Page with PDF Download"""
-    
+    """Generates the HTML Report with PDF Download."""
     html_rows = ""
     for item in analysis_results:
         # Color coding
-        color = "#e74c3c" # Red (Avoid) or Error
+        color = "#e74c3c" # Red
         bg_color = "#fdedec"
         decision = item.get('decision', 'N/A')
         
@@ -147,22 +174,18 @@ def generate_html_report(analysis_results):
         </script>
     </head>
     <body style="font-family: Arial, sans-serif; max-width: 700px; margin: auto; padding: 20px; background-color: #f4f6f7;">
-        
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h2 style="color: #2c3e50; margin: 0;"></h2> 
             <button onclick="downloadPDF()" style="background-color: #e74c3c; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
                 📄 Download PDF
             </button>
         </div>
-
         <div id="report-content" style="background-color: white; padding: 30px; border-radius: 10px;">
             <h2 style="color: #2c3e50; text-align: center; border-bottom: 2px solid #ecf0f1; padding-bottom: 15px; margin-top: 0;">🚀 Daily IPO Agent Report</h2>
             <p style="text-align: center; color: #7f8c8d; font-size: 12px; margin-bottom: 25px;">
                 Strict Financial Analysis | Powered by Gemini AI
             </p>
-            
             {html_rows}
-            
             <p style="font-size: 10px; color: #bdc3c7; text-align: center; margin-top: 30px; border-top: 1px solid #ecf0f1; padding-top: 10px;">
                 Disclaimer: This report is AI-generated for informational purposes only. Not financial advice.
             </p>
@@ -176,7 +199,45 @@ def generate_html_report(analysis_results):
 
 @app.get("/")
 def home():
-    return {"message": "IPO Analyst AI is Ready. Go to /report to see the PDF view."}
+    return {"message": "IPO Agent is Running. Use /update_sheet to scrape, /report to analyze."}
+
+@app.get("/update_sheet")
+def auto_update_sheet():
+    """1. Scrape Web -> 2. Gemini Extracts -> 3. Save to Sheet"""
+    
+    # Step A: Scrape
+    print("Scraping website...")
+    raw_text = scrape_web_data()
+    if not raw_text:
+        return {"status": "error", "message": "Failed to scrape website"}
+
+    # Step B: Gemini Extraction
+    print("Extracting with AI...")
+    new_ipos = ai_extract_ipos(raw_text)
+    if not new_ipos or not isinstance(new_ipos, list):
+         return {"status": "error", "message": "AI could not find structured data"}
+
+    # Step C: Prevent Duplicates
+    current_data = get_sheet_data()
+    # Normalize names to lowercase for comparison
+    existing_names = [row.get('company_name', '').lower().strip() for row in current_data]
+    
+    rows_to_add = []
+    for ipo in new_ipos:
+        # Only add if company name is not already in the sheet
+        if ipo.get('company_name', '').lower().strip() not in existing_names:
+            rows_to_add.append(ipo)
+    
+    # Step D: Save
+    if rows_to_add:
+        print(f"Adding {len(rows_to_add)} new IPOs...")
+        try:
+            requests.post(IPO_SHEET_API, json=rows_to_add)
+            return {"status": "success", "added_count": len(rows_to_add), "new_data": rows_to_add}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    else:
+        return {"status": "success", "message": "Sheet is already up to date (No new IPOs found)."}
 
 @app.get("/analyze")
 def run_analysis_json():
