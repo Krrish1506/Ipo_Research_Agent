@@ -56,6 +56,7 @@ def scrape_web_data():
         print("Agent Status: Scraping Web Data...")
         response = requests.get(url, headers=headers, timeout=30)
         soup = BeautifulSoup(response.text, 'html.parser')
+        # Get enough text to cover the main tables, but limit to prevent token overflow
         return soup.get_text()[:15000]
     except Exception as e:
         print(f"Scraping Error: {e}")
@@ -104,52 +105,76 @@ def ai_extract_ipos(raw_text):
         return []
 
 def run_scraping_job():
-    """Background Task: Scrapes -> Extracts -> Smart Duplicate Check -> Updates Sheet"""
+    """Background Task: Scrapes -> Extracts -> Smart Updates (TBA -> Real Data)"""
     raw_text = scrape_web_data()
     if not raw_text: return
 
     new_ipos = ai_extract_ipos(raw_text)
     if not new_ipos: return
 
-    print("Agent Status: Checking for duplicates and data quality...")
+    print("Agent Status: Checking for updates and duplicates...")
     current_data = get_sheet_data()
     
-    # Fingerprint existing data (Name + Symbol)
-    existing_keys = set()
-    for row in current_data:
-        name = str(row.get('company_name', '')).lower().strip()
-        symbol = str(row.get('symbol', '')).lower().strip()
-        if name: existing_keys.add(name)
-        if symbol: existing_keys.add(symbol)
+    # Map existing companies for fast lookup: {'name': full_row_data}
+    existing_map = {str(row.get('company_name', '')).lower().strip(): row for row in current_data}
     
     rows_to_add = []
+    
     for ipo in new_ipos:
-        name = str(ipo.get('company_name', '')).lower().strip()
-        symbol = str(ipo.get('symbol', '')).lower().strip()
-        
-        # 1. GATEKEEPER: Skip if Name or Symbol exists in sheet
-        if name in existing_keys or (symbol and symbol in existing_keys):
-            continue
-            
-        # 2. CLEANER: Fix blanks so sheet stays tidy
+        # Clean defaults before processing
         if not ipo.get('gmp'): ipo['gmp'] = 0
         if not ipo.get('price_band_high'): ipo['price_band_high'] = 0
         if not ipo.get('price_band_low'): ipo['price_band_low'] = 0
         if not ipo.get('lot_size'): ipo['lot_size'] = 0
         if not ipo.get('industry'): ipo['industry'] = "TBA"
         if not ipo.get('notes'): ipo['notes'] = "Details pending."
+
+        name_key = str(ipo.get('company_name', '')).lower().strip()
         
-        rows_to_add.append(ipo)
-        existing_keys.add(name) # Prevent adding same IPO twice in this run
-    
+        # SCENARIO 1: NEW DATA (Add it)
+        if name_key not in existing_map:
+            rows_to_add.append(ipo)
+            existing_map[name_key] = ipo # Prevent double adding
+            
+        # SCENARIO 2: EXISTING DATA (Check for Updates)
+        else:
+            existing_row = existing_map[name_key]
+            needs_update = False
+            
+            # Check if Sheet has "TBA" or "0" but we found REAL data
+            # Check Price
+            old_price = str(existing_row.get('price_band_high', '0'))
+            new_price = str(ipo.get('price_band_high', '0'))
+            if (old_price in ['0', 'TBA', '']) and (new_price not in ['0', 'TBA', '']):
+                needs_update = True
+                
+            # Check Date
+            old_date = str(existing_row.get('application_open', 'TBA'))
+            new_date = str(ipo.get('application_open', 'TBA'))
+            if (old_date in ['TBA', '']) and (new_date not in ['TBA', '']):
+                needs_update = True
+
+            # If we found new info, UPDATE the specific row
+            if needs_update:
+                print(f"Agent Status: Updating found for {ipo['company_name']}...")
+                try:
+                    # Sheet.best update endpoint: /tabs/0/company_name/{value}
+                    # We encode the company name to handle spaces/symbols
+                    sanitized_name = requests.utils.quote(ipo['company_name'])
+                    update_url = f"{IPO_SHEET_API}/company_name/{sanitized_name}"
+                    requests.patch(update_url, json=ipo)
+                except Exception as e:
+                    print(f"Update Error: {e}")
+
+    # Batch add completely new rows
     if rows_to_add:
-        print(f"Agent Status: Adding {len(rows_to_add)} NEW, clean IPOs to Sheet...")
+        print(f"Agent Status: Adding {len(rows_to_add)} NEW rows...")
         try:
             requests.post(IPO_SHEET_API, json=rows_to_add)
         except Exception as e:
             print(f"Sheet Error: {e}")
     else:
-        print("Agent Status: No new unique data found. Sheet is up to date.")
+        print("Agent Status: No new companies found.")
 
 def analyze_ipo(ipo_data):
     """The Financial Brain: Calculates Gains, Risk, and Verdict"""
@@ -193,6 +218,7 @@ def analyze_ipo(ipo_data):
 def generate_html_report(analysis_results):
     """Creates a Professional Financial Dashboard Report"""
     
+    # Split into Active and Closed
     active_ipos = [i for i in analysis_results if i.get('status_category') != 'closed' and i.get('decision') != 'CLOSED']
     closed_ipos = [i for i in analysis_results if i.get('status_category') == 'closed' or i.get('decision') == 'CLOSED']
 
@@ -201,7 +227,8 @@ def generate_html_report(analysis_results):
         score = item.get('score', 0)
         risk = item.get('risk', 'Unknown')
         
-        color = "#f39c12" # Orange
+        # Color Coding
+        color = "#f39c12" # Orange (Watch)
         bg_color = "#fef9e7"
         if decision == "APPLY":
             color = "#27ae60" # Green
@@ -228,11 +255,14 @@ def generate_html_report(analysis_results):
                     <div style="font-size: 11px; color: #7f8c8d; margin-top: 4px;">Score: {score}/100</div>
                 </div>
             </div>
+            
             <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.05); margin: 10px 0;">
+            
             <div style="display: flex; justify-content: space-between; font-size: 13px; color: #34495e; margin-bottom: 8px;">
                 <span>Price Band: <strong>{item.get('price_band', 'N/A')}</strong></span>
                 <span>Est. Listing: <strong>{item.get('listing_price', 'N/A')}</strong></span>
             </div>
+
             <p style="margin: 0; font-size: 13px; color: #555; line-height: 1.5; margin-top: 10px;">
                 {item.get('reason', '')}
             </p>
@@ -268,24 +298,33 @@ def generate_html_report(analysis_results):
         </script>
     </head>
     <body>
+        
+        <!-- View Online Button (For Email Clients) -->
         <div style="text-align: center; margin-bottom: 20px;">
             <a href="{live_link}" target="_blank" class="btn btn-blue">
                 🌐 View Interactive Report & Download
             </a>
             <p style="font-size: 11px; color: #999; margin-top: 5px;">(Gmail blocks scripts. Click above to enable PDF download)</p>
         </div>
+
         <div id="report-content" class="container">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                 <h2 style="margin: 0; border: none;">🚀 IPO Agent Dashboard</h2>
                 <button onclick="downloadPDF()" class="btn btn-red">📄 PDF</button>
             </div>
+            
             <p style="text-align: center; color: #95a5a6; font-size: 12px; margin-top: -10px; margin-bottom: 30px;">
                 Generated on {datetime.now().strftime('%Y-%m-%d')} | Powered by Gemini 2.5
             </p>
+
+            <!-- Active Section -->
             <div class="section-title">🔥 Actionable Opportunities</div>
             {active_html if active_html else "<p style='color:#999; text-align:center;'>No active IPOs found today.</p>"}
+
+            <!-- Closed Section -->
             <div class="section-title">🔒 Closed / Waiting for Listing</div>
             {closed_html if closed_html else "<p style='color:#999; text-align:center;'>No closed IPOs pending listing.</p>"}
+
             <div style="margin-top: 40px; padding-top: 15px; border-top: 1px solid #eee; text-align: center; font-size: 10px; color: #bdc3c7;">
                 <strong>Disclaimer:</strong> This report is AI-generated for educational purposes only. <br>
                 It is not financial advice. Please consult a certified financial advisor before investing.
