@@ -77,6 +77,7 @@ def ai_extract_ipos(raw_text):
     1. **GMP**: Look for "GMP", "Grey Market Premium", or "Premium". If not found, put 0.
     2. **Status**: precise status: 'upcoming', 'open', or 'closed'.
     3. **Price Band**: Extract the High and Low (e.g., 100-120). If fixed price, Low=High.
+    4. **Empty Fields**: If data is missing (like dates), use "TBA". Do not leave blank.
 
     --- OUTPUT FORMAT (JSON ONLY) ---
     [
@@ -104,30 +105,56 @@ def ai_extract_ipos(raw_text):
         return []
 
 def run_scraping_job():
-    """Background Task: Scrapes -> Extracts -> Updates Sheet"""
+    """Background Task: Scrapes -> Extracts -> Smart Duplicate Check -> Updates Sheet"""
     raw_text = scrape_web_data()
     if not raw_text: return
 
     new_ipos = ai_extract_ipos(raw_text)
     if not new_ipos: return
 
+    print("Agent Status: Checking for duplicates and data quality...")
     current_data = get_sheet_data()
-    existing_names = [row.get('company_name', '').lower().strip() for row in current_data]
+    
+    # Create a set of existing keys (Name + Symbol) for fast lookup
+    # We clean strings to lowercase/stripped to ensure accurate matching
+    existing_keys = set()
+    for row in current_data:
+        name = str(row.get('company_name', '')).lower().strip()
+        symbol = str(row.get('symbol', '')).lower().strip()
+        if name: existing_keys.add(name)
+        if symbol: existing_keys.add(symbol)
     
     rows_to_add = []
     for ipo in new_ipos:
-        # Avoid duplicates
-        if ipo.get('company_name', '').lower().strip() not in existing_names:
-            rows_to_add.append(ipo)
+        name = str(ipo.get('company_name', '')).lower().strip()
+        symbol = str(ipo.get('symbol', '')).lower().strip()
+        
+        # 1. DUPLICATE CHECK: Skip if Name or Symbol exists
+        if name in existing_keys or (symbol and symbol in existing_keys):
+            continue
+            
+        # 2. DATA QUALITY CHECK: Fix blanks
+        # Ensure critical fields have at least default values
+        if not ipo.get('gmp'): ipo['gmp'] = 0
+        if not ipo.get('price_band_high'): ipo['price_band_high'] = 0
+        if not ipo.get('price_band_low'): ipo['price_band_low'] = 0
+        if not ipo.get('lot_size'): ipo['lot_size'] = 0
+        if not ipo.get('industry'): ipo['industry'] = "General"
+        if not ipo.get('notes'): ipo['notes'] = "Details pending."
+        
+        # Add to the list
+        rows_to_add.append(ipo)
+        # Add to our local set so we don't add the same new IPO twice in one run
+        existing_keys.add(name)
     
     if rows_to_add:
-        print(f"Agent Status: Adding {len(rows_to_add)} new IPOs to Sheet...")
+        print(f"Agent Status: Adding {len(rows_to_add)} NEW, clean IPOs to Sheet...")
         try:
             requests.post(IPO_SHEET_API, json=rows_to_add)
         except Exception as e:
             print(f"Sheet Error: {e}")
     else:
-        print("Agent Status: Sheet is up to date.")
+        print("Agent Status: No new unique data found. Sheet is up to date.")
 
 def analyze_ipo(ipo_data):
     """The Financial Brain: Calculates Gains, Risk, and Verdict"""
@@ -144,7 +171,7 @@ def analyze_ipo(ipo_data):
     3. **Decision**: 
        - APPLY (If Gain > 15% and Risk is Low/Med)
        - AVOID (If Gain < 5% or Risk is High)
-       - WATCH (If uncertain)
+       - WATCH (If uncertain or data missing)
        - CLOSED (If status is 'closed')
     4. **Estimated Listing**: Price High + GMP.
 
@@ -155,6 +182,7 @@ def analyze_ipo(ipo_data):
             "decision": "APPLY",
             "score": 85 (0-100),
             "risk": "Medium",
+            "price_band": "133-140",
             "listing_price": "₹150",
             "gain_percent": "25%",
             "reason": "Strong GMP indicates healthy demand despite market volatility.",
@@ -211,10 +239,11 @@ def generate_html_report(analysis_results):
             <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.05); margin: 10px 0;">
             
             <div style="display: flex; justify-content: space-between; font-size: 13px; color: #34495e; margin-bottom: 8px;">
+                <span>Price Band: <strong>{item.get('price_band', 'N/A')}</strong></span>
                 <span>Est. Listing: <strong>{item.get('listing_price', 'N/A')}</strong></span>
             </div>
 
-            <p style="margin: 0; font-size: 13px; color: #555; line-height: 1.5;">
+            <p style="margin: 0; font-size: 13px; color: #555; line-height: 1.5; margin-top: 10px;">
                 {item.get('reason', '')}
             </p>
         </div>
@@ -223,7 +252,8 @@ def generate_html_report(analysis_results):
     active_html = "".join([create_card(i) for i in active_ipos])
     closed_html = "".join([create_card(i) for i in closed_ipos])
 
-    # Dynamic Render URL (Replace with yours automatically if possible, or manual)
+    # Dynamic Render URL
+    # IMPORTANT: Ensure this matches your actual Render URL
     live_link = "https://ipo-research-agent.onrender.com/report"
 
     return f"""
