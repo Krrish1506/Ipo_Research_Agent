@@ -56,7 +56,6 @@ def scrape_web_data():
         print("Agent Status: Scraping Web Data...")
         response = requests.get(url, headers=headers, timeout=30)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Get enough text to cover the main tables, but limit to prevent token overflow
         return soup.get_text()[:15000]
     except Exception as e:
         print(f"Scraping Error: {e}")
@@ -115,8 +114,7 @@ def run_scraping_job():
     print("Agent Status: Checking for duplicates and data quality...")
     current_data = get_sheet_data()
     
-    # Create a set of existing keys (Name + Symbol) for fast lookup
-    # We clean strings to lowercase/stripped to ensure accurate matching
+    # Fingerprint existing data (Name + Symbol)
     existing_keys = set()
     for row in current_data:
         name = str(row.get('company_name', '')).lower().strip()
@@ -129,23 +127,20 @@ def run_scraping_job():
         name = str(ipo.get('company_name', '')).lower().strip()
         symbol = str(ipo.get('symbol', '')).lower().strip()
         
-        # 1. DUPLICATE CHECK: Skip if Name or Symbol exists
+        # 1. GATEKEEPER: Skip if Name or Symbol exists in sheet
         if name in existing_keys or (symbol and symbol in existing_keys):
             continue
             
-        # 2. DATA QUALITY CHECK: Fix blanks
-        # Ensure critical fields have at least default values
+        # 2. CLEANER: Fix blanks so sheet stays tidy
         if not ipo.get('gmp'): ipo['gmp'] = 0
         if not ipo.get('price_band_high'): ipo['price_band_high'] = 0
         if not ipo.get('price_band_low'): ipo['price_band_low'] = 0
         if not ipo.get('lot_size'): ipo['lot_size'] = 0
-        if not ipo.get('industry'): ipo['industry'] = "General"
+        if not ipo.get('industry'): ipo['industry'] = "TBA"
         if not ipo.get('notes'): ipo['notes'] = "Details pending."
         
-        # Add to the list
         rows_to_add.append(ipo)
-        # Add to our local set so we don't add the same new IPO twice in one run
-        existing_keys.add(name)
+        existing_keys.add(name) # Prevent adding same IPO twice in this run
     
     if rows_to_add:
         print(f"Agent Status: Adding {len(rows_to_add)} NEW, clean IPOs to Sheet...")
@@ -198,7 +193,6 @@ def analyze_ipo(ipo_data):
 def generate_html_report(analysis_results):
     """Creates a Professional Financial Dashboard Report"""
     
-    # Split into Active and Closed
     active_ipos = [i for i in analysis_results if i.get('status_category') != 'closed' and i.get('decision') != 'CLOSED']
     closed_ipos = [i for i in analysis_results if i.get('status_category') == 'closed' or i.get('decision') == 'CLOSED']
 
@@ -207,8 +201,7 @@ def generate_html_report(analysis_results):
         score = item.get('score', 0)
         risk = item.get('risk', 'Unknown')
         
-        # Color Coding
-        color = "#f39c12" # Orange (Watch)
+        color = "#f39c12" # Orange
         bg_color = "#fef9e7"
         if decision == "APPLY":
             color = "#27ae60" # Green
@@ -235,14 +228,11 @@ def generate_html_report(analysis_results):
                     <div style="font-size: 11px; color: #7f8c8d; margin-top: 4px;">Score: {score}/100</div>
                 </div>
             </div>
-            
             <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.05); margin: 10px 0;">
-            
             <div style="display: flex; justify-content: space-between; font-size: 13px; color: #34495e; margin-bottom: 8px;">
                 <span>Price Band: <strong>{item.get('price_band', 'N/A')}</strong></span>
                 <span>Est. Listing: <strong>{item.get('listing_price', 'N/A')}</strong></span>
             </div>
-
             <p style="margin: 0; font-size: 13px; color: #555; line-height: 1.5; margin-top: 10px;">
                 {item.get('reason', '')}
             </p>
@@ -252,8 +242,7 @@ def generate_html_report(analysis_results):
     active_html = "".join([create_card(i) for i in active_ipos])
     closed_html = "".join([create_card(i) for i in closed_ipos])
 
-    # Dynamic Render URL
-    # IMPORTANT: Ensure this matches your actual Render URL
+    # Important: Replace this with your actual Render URL
     live_link = "https://ipo-research-agent.onrender.com/report"
 
     return f"""
@@ -279,33 +268,24 @@ def generate_html_report(analysis_results):
         </script>
     </head>
     <body>
-        
-        <!-- View Online Button (For Email Clients) -->
         <div style="text-align: center; margin-bottom: 20px;">
             <a href="{live_link}" target="_blank" class="btn btn-blue">
                 🌐 View Interactive Report & Download
             </a>
             <p style="font-size: 11px; color: #999; margin-top: 5px;">(Gmail blocks scripts. Click above to enable PDF download)</p>
         </div>
-
         <div id="report-content" class="container">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                 <h2 style="margin: 0; border: none;">🚀 IPO Agent Dashboard</h2>
                 <button onclick="downloadPDF()" class="btn btn-red">📄 PDF</button>
             </div>
-            
             <p style="text-align: center; color: #95a5a6; font-size: 12px; margin-top: -10px; margin-bottom: 30px;">
                 Generated on {datetime.now().strftime('%Y-%m-%d')} | Powered by Gemini 2.5
             </p>
-
-            <!-- Active Section -->
             <div class="section-title">🔥 Actionable Opportunities</div>
             {active_html if active_html else "<p style='color:#999; text-align:center;'>No active IPOs found today.</p>"}
-
-            <!-- Closed Section -->
             <div class="section-title">🔒 Closed / Waiting for Listing</div>
             {closed_html if closed_html else "<p style='color:#999; text-align:center;'>No closed IPOs pending listing.</p>"}
-
             <div style="margin-top: 40px; padding-top: 15px; border-top: 1px solid #eee; text-align: center; font-size: 10px; color: #bdc3c7;">
                 <strong>Disclaimer:</strong> This report is AI-generated for educational purposes only. <br>
                 It is not financial advice. Please consult a certified financial advisor before investing.
@@ -328,7 +308,11 @@ def trigger_background_update(background_tasks: BackgroundTasks):
     return {"status": "success", "message": "Background Agent Started: Scraping & Analyzing..."}
 
 @app.get("/report", response_class=HTMLResponse)
-def run_analysis_html():
+def run_analysis_html(background_tasks: BackgroundTasks):
+    """Generates the report AND triggers a new scrape in the background."""
+    # This line ensures your data is refreshed every time you (or anyone) views the report
+    background_tasks.add_task(run_scraping_job)
+    
     raw_data = get_sheet_data()
     results = analyze_ipo(raw_data)
     return generate_html_report(results)
