@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -23,7 +23,7 @@ GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL")
 
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY not found in .env file")
-genai.configure(api_key=GOOGLE_API_KEY)
+client = genai.Client(api_key=GOOGLE_API_KEY)
 
 try:
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -62,17 +62,19 @@ def clean_and_parse_json(text):
 def generate_with_fallback(prompt):
     """Tries multiple Gemini models in sequence to bypass rate limits."""
     models_to_try = [
-        'gemini-3.0-flash',          
+        'gemini-3-flash-preview',          
         'gemini-2.5-flash',        
-        'gemini-3.1-flash-lite',   
+        'gemini-3.1-flash-lite-preview',   
         'gemini-2.5-flash-lite',   
-        'gemini-1.5-flash'         
+        'gemini-2.0-flash'         
     ]
     for model_name in models_to_try:
         try:
             print(f"Agent Status: Attempting AI task with {model_name}...")
-            current_model = genai.GenerativeModel(model_name)
-            response = current_model.generate_content(prompt)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
             return response.text
         except Exception as e:
             error_msg = str(e).lower()
@@ -89,15 +91,30 @@ def generate_with_fallback(prompt):
 # 3. SCRAPING & ETL PIPELINE (The Backend)
 # ---------------------------------------------------------
 def scrape_web_data():
-    url = "https://ipowatch.in/upcoming-ipo-calendar-ipo-list/" 
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    try:
-        response = requests.get(url, headers=headers, timeout=30)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        return soup.get_text()[:15000]
-    except Exception as e:
-        print(f"Scraping Error: {e}")
-        return ""
+    urls = [
+        "https://ipowatch.in/upcoming-ipo-calendar-ipo-list/",
+        "https://www.chittorgarh.com/report/ipo-in-india-list-of-mainboard-sme-ipos/82/"
+    ]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+
+    combined_raw_text = ""
+    for url in urls:
+        try:
+            print(f"Agent Status: Scraping {url}...")
+            response = requests.get(url, headers=headers, timeout=30)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            extracted_text = soup.get_text()[:8000] 
+            combined_raw_text += f"\n\n--- SOURCE: {url} ---\n{extracted_text}"
+            time.sleep(2)
+        except Exception as e:
+            print(f"Scraping Error on {url}: {e}")
+            
+    return combined_raw_text
 
 def ai_extract_ipos(raw_text):
     prompt = f"""
@@ -109,9 +126,10 @@ def ai_extract_ipos(raw_text):
     
     CRITICAL RULES:
     1. **GMP**: Look for "GMP" or "Premium". If not found, put 0.
-    2. **Status**: 'upcoming', 'open', or 'closed'.
-    3. **Price Band**: Extract High and Low. If fixed, Low=High.
-    4. **Empty Fields**: Use "TBA". Do not leave blank.
+    2. **Conflict Resolution**: If different sources provide conflicting data, act conservatively. Choose the lower GMP and wider price band.
+    3. **Status**: 'upcoming', 'open', or 'closed'.
+    4. **Price Band**: Extract High and Low. If fixed, Low=High.
+    5. **Empty Fields**: Use "TBA". Do not leave blank.
 
     --- OUTPUT FORMAT (JSON ONLY) ---
     [
@@ -328,6 +346,11 @@ def generate_html_report(analysis_results):
                 <span>Est. Listing: <strong>{item.get('listing_price', 'N/A')}</strong></span>
             </div>
 
+            <div style="display: flex; justify-content: space-between; font-size: 13px; color: #34495e; margin-bottom: 8px;">
+                <span>IPO Date: <strong>{item.get('ipo_date', 'TBA')}</strong></span>
+                <span>Open-Close: <strong>{item.get('open_date', 'TBA')} to {item.get('close_date', 'TBA')}</strong></span>
+            </div>
+
             <p style="margin: 0; font-size: 13px; color: #555; line-height: 1.5; margin-top: 10px;">
                 {item.get('reason', '')}
             </p>
@@ -409,6 +432,26 @@ def get_daily_report():
 
         # Analyze only the filtered, actionable items
         results = analyze_ipo(final_list)
+        
+        # DIAGNOSTIC CHECK: Stop silent failures
+        if not results:
+            return f"""
+            <div style="font-family: sans-serif; padding: 20px; border: 2px solid red; background-color: #fce4e4;">
+                <h2 style="color: #c0392b;">⚠️ AI Analysis Failed</h2>
+                <p>The system found <b>{len(final_list)}</b> actionable IPOs in the database, but the Gemini API failed to analyze them.</p>
+                <p><b>Possible Reasons:</b> Free-tier Rate Limit (429) exceeded, or Invalid API Key.</p>
+                <p>Check your Render logs for: <i>'All fallback models exhausted'</i>.</p>
+            </div>
+            """
+            
+        # Merge dates from original data into results
+        for r in results:
+            comp_name = str(r.get('company', '')).strip().lower()
+            orig_item = next((item for item in final_list if str(item.get('company_name', '')).strip().lower() == comp_name), {})
+            r['ipo_date'] = orig_item.get('ipo_date', 'TBA')
+            r['open_date'] = orig_item.get('application_open', 'TBA')
+            r['close_date'] = orig_item.get('application_close', 'TBA')
+            
         return generate_html_report(results)
         
     except Exception as e:
