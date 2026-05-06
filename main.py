@@ -27,11 +27,20 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 try:
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    
+    google_creds_str = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    
+    if google_creds_str:
+        creds_dict = json.loads(google_creds_str)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        print("Google Sheets Authenticated Successfully! (from environment variable)")
+    else:
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+        print("Google Sheets Authenticated Successfully! (from local file)")
+        
     gc = gspread.authorize(creds)
-    print("Google Sheets Authenticated Successfully!")
 except Exception as e:
-    print(f"CRITICAL: Failed to load credentials.json: {e}")
+    print(f"CRITICAL: Failed to load credentials: {e}")
 
 app = FastAPI(title="Agentic AI IPO Analyst")
 

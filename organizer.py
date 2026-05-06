@@ -1,4 +1,5 @@
 import os
+import json
 import time
 from dotenv import load_dotenv
 import gspread
@@ -12,7 +13,17 @@ GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL")
 
 try:
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    
+    google_creds_str = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    
+    if google_creds_str:
+        creds_dict = json.loads(google_creds_str)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        print("Google Sheets Authenticated Successfully! (from environment variable)")
+    else:
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+        print("Google Sheets Authenticated Successfully! (from local file)")
+        
     gc = gspread.authorize(creds)
 except Exception as e:
     print(f"CRITICAL: Failed to load credentials: {e}")
