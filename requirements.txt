@@ -1,9 +1,8 @@
 fastapi
 uvicorn
 requests
+beautifulsoup4
 python-dotenv
 google-generativeai
-html2pdf
-jinja2
-python-multipart
-beautifulsoup4
+gspread
+google-auth
