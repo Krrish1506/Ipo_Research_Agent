@@ -176,13 +176,34 @@ def run_scraping_job():
                 batch_response = generate_with_fallback(batch_prompt)
                 if batch_response:
                     batch_data = clean_and_parse_json(batch_response)
-                    if batch_data:
+                    if batch_data and len(batch_data) > 0:
                         raw_headers = raw_sheet.row_values(1)
+                        time.sleep(3)
+                        
+                        # --- THE FIX: MERGE LOGIC ---
+                        # Fetch the existing database so we don't overwrite prices/dates with blanks
+                        main_sheet = workbook.worksheet("ipolist")
+                        existing_ipos = main_sheet.get_all_records()
+                        existing_map = {str(row.get('company_name', '')).strip().lower(): row for row in existing_ipos}
                         time.sleep(3)
                         
                         padded_rows = []
                         for item in batch_data:
-                            row_values = [str(item.get(h, "")).strip() if h in item else "" for h in raw_headers]
+                            comp_name = str(item.get("company_name", "")).strip().lower()
+                            
+                            # 1. Start with the existing data (prices, dates, etc.)
+                            if comp_name in existing_map:
+                                full_row = existing_map[comp_name].copy()
+                            else:
+                                full_row = {"company_name": item.get("company_name", "")}
+                                
+                            # 2. Overwrite only the missing cells with Gemini's new answers
+                            for key, val in item.items():
+                                if val and str(val).lower() not in ["tba", ""]:
+                                    full_row[key] = val
+                                    
+                            # 3. Map it perfectly to headers
+                            row_values = [str(full_row.get(h, "")).strip() for h in raw_headers]
                             padded_rows.append(row_values)
                         
                         if padded_rows:
@@ -227,32 +248,31 @@ def analyze_ipo(ipo_data):
     """The Financial Brain: Calculates Gains, Risk, and Verdict"""
     data_str = json.dumps(ipo_data)
     prompt = f"""
-    You are a Senior Financial Analyst AI.
-    Here is the latest IPO data: {data_str}
+    You are a Senior Wealth Manager and IPO Specialist. 
+    Analyze this actionable IPO data for a high-net-worth client: {data_str}
 
-    --- YOUR JOB ---
-    For each IPO, provide a deep analysis JSON object.
+    --- OBJECTIVE ---
+    Provide a verdict on whether the client should commit their financial resources.
     
-    1. **Calculate Gain**: If GMP & Price exist, calculate % Gain = (GMP / Price High) * 100.
-    2. **Risk Analysis**: Assess risk (Low/Medium/High) based on Industry & GMP.
-    3. **Decision**: 
-       - APPLY (If Gain > 15% and Risk is Low/Med)
-       - AVOID (If Gain < 5% or Risk is High)
-       - WATCH (If uncertain or data missing)
-       - CLOSED (If status is 'closed')
-    4. **Estimated Listing**: Price High + GMP.
+    --- CRITICAL ANALYSIS RULES ---
+    1. **Assurance Level**: Calculate a 'Confidence Score' (0-100%). High GMP (>25%) and strong Industry sectors increase this.
+    2. **Resource Allocation**:
+       - 'FULL APPLY': Strong GMP, high demand, low risk.
+       - 'MODERATE': Good GMP but volatile industry.
+       - 'AVOID': Listing price likely near or below cost.
+    3. **Listing Day Assurance**: Based on the GMP, estimate the profit margin.
 
     --- OUTPUT FORMAT (JSON LIST) ---
     [
         {{
             "company": "Name",
-            "decision": "APPLY",
-            "score": 85,
-            "risk": "Medium",
-            "price_band": "133-140",
-            "listing_price": "₹150",
-            "gain_percent": "25%",
-            "reason": "Strong GMP indicates healthy demand.",
+            "decision": "FULL APPLY",
+            "score": 92,
+            "risk": "Low",
+            "price_band": "100-110",
+            "listing_price": "₹145",
+            "gain_percent": "35%",
+            "reason": "Exceptional GMP and heavy oversubscription potential. High assurance for resource commitment.",
             "status_category": "active"
         }}
     ]
@@ -367,19 +387,32 @@ def trigger_master_pipeline(background_tasks: BackgroundTasks):
 
 @app.get("/report", response_class=HTMLResponse)
 def get_daily_report():
-    """Activepieces triggers this 4 minutes later to grab the email HTML."""
+    """Fetches ONLY actionable IPOs for the analysis report."""
     try:
-        # 1. Pull the fresh, organized data from Google Sheets
         workbook = gc.open_by_url(GOOGLE_SHEET_URL)
         main_sheet = workbook.worksheet("ipolist")
-        raw_data = main_sheet.get_all_records()
-        
-        # 2. Ask the AI Analyst to evaluate the IPOs
-        results = analyze_ipo(raw_data)
-        
-        # 3. Generate and return the HTML template
+        all_data = main_sheet.get_all_records()
+
+        # FILTER: Only keep IPOs that are 'open' or 'upcoming'
+        # This ensures the client only sees actionable data for asset management.
+        actionable_data = [
+            ipo for ipo in all_data 
+            if str(ipo.get('status', '')).lower() in ['open', 'upcoming']
+        ]
+
+        # Safety: If there are too many (e.g. 30 upcoming), take the top 15 
+        # of the filtered list to stay within Gemini's quality window.
+        final_list = actionable_data[:15] if len(actionable_data) > 15 else actionable_data
+
+        if not final_list:
+            return "<h1>No Active or Upcoming IPOs found in the database today.</h1>"
+
+        # Analyze only the filtered, actionable items
+        results = analyze_ipo(final_list)
         return generate_html_report(results)
+        
     except Exception as e:
+        print(f"Report Error: {e}")
         return f"<h1>Error generating report: {e}</h1>"
 
 if __name__ == "__main__":
