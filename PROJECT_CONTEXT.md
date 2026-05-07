@@ -742,3 +742,28 @@ GOOGLE_CREDENTIALS_JSON={"type":"service_account","project_id":"xxx",...}
 **Project Maintained By**: GitHub Copilot  
 **Last Review**: May 6, 2026  
 **Version**: 7.0
+
+---
+
+## 📈 Recent Updates (May 7, 2026)
+### Live Market Tracking & Priority Task Queue
+
+**1. Live Market Tracking (`organizer.py`)**
+- Integrated `yfinance` to track live stock market data for Listed IPOs.
+- Automatically fetches and updates: `listing_price`, `current_open`, `current_close`, and calculates `gain_loss`.
+- Dynamically appends new tracking columns to the database without breaking existing structures.
+
+**2. AI Ticker Verification (`main.py`)**
+- Added explicit instructions for Google Gemini to find official Yahoo Finance tickers on the NSE or BSE.
+- Forces appending `.NS` or `.BO` to ensure downstream `yfinance` fetches don't fail or hallucinate.
+
+**3. Priority-Driven Missing Details Queue (`organizer.py`)**
+- Redesigned the task queue (Phase 3) to strictly sort items by date/status.
+- **Priority 1**: Open IPOs, or Upcoming IPOs opening within 7 days.
+- **Priority 2**: Listed IPOs, or Upcoming IPOs listing within 14 days.
+- Automatically flags `symbol` as missing if a listed IPO lacks the `.NS`/`.BO` suffix.
+
+**4. Smart Merge & Dynamic Status Tracking**
+- Replaced blind row deletion with cell-level conflict resolution. 
+- Automatically monitors dates (`ipo_date`, `application_open`, `application_close`) against the system clock to shift status organically (e.g., Upcoming -> Open -> Closed -> Listed).
+- Resolves GSpread `IncorrectRange` errors by dynamically mapping range ends (`rowcol_to_a1`) based on current header length.

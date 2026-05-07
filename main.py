@@ -182,14 +182,16 @@ def run_scraping_job():
                 CRITICAL INSTRUCTIONS:
                 1. For each company, provide ONLY the missing fields listed.
                 2. You MUST include the exact company_name in each JSON object.
-                3. Provide realistic info. Otherwise, use "TBA".
-                4. Return ONLY a JSON array.
+                3. If 'symbol' is missing, find the exact official Yahoo Finance ticker for the Indian National Stock Exchange (NSE) or Bombay Stock Exchange (BSE). You MUST append '.NS' or '.BO' to the ticker (e.g., RELIANCE.NS).
+                4. Provide realistic info. Otherwise, use "TBA".
+                5. Return ONLY a JSON array.
                 
                 [
                     {{
                         "company_name": "Exact Company Name",
                         "industry": "Industry sector",
-                        "notes": "Brief description"
+                        "notes": "Brief description",
+                        "symbol": "TICKER.NS"
                     }}
                 ]
                 """

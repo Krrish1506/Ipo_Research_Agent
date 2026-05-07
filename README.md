@@ -7,9 +7,11 @@ The **IPO Research Agent (Version 7.0)** is a full-stack, automated ETL solution
 
 ## 🌟 Key Features
 * **Automated Web Scraping**: Periodically fetches raw calendar data from IPOWatch.
-* **Self-Healing Data Pipeline**: Automatically identifies missing data (like industry or notes), adds them to a "Missing Details" task queue, and batch-enriches them in the next cycle using AI.
-* **Smart Deduplication & Merge Logic**: Merges newly enriched data with existing spreadsheet records based on "completeness scores" without overwriting valid data like prices and dates with empty strings.
-* **Rate-Limit Resilience**: Implements a 5-model Gemini rotation (Primary: `gemini-3.0-flash`) to gracefully bypass free-tier API quotas, alongside batch operations to respect Google Sheets write limits.
+* **Self-Healing Data Pipeline**: Automatically identifies missing data (like industry or tickers), pushes them to a "Missing Details" task queue, and batch-enriches them in the next cycle using AI.
+* **Priority-Driven Workflow**: Sorts the task queue dynamically to prioritize Open IPOs and IPOs listing within 7 days, ensuring the most urgent data is resolved first.
+* **Live Market Tracking**: Integrated with `yfinance` to automatically track listed IPOs, fetching listing day prices, live open/close prices, and calculating exact percentage gains/losses.
+* **Smart Deduplication & Merge Logic**: Merges newly enriched data with existing spreadsheet records based on cell-level differences, avoiding blind overwrites. Automatically shifts statuses (e.g., from Upcoming to Open to Listed) based on dynamic date comparisons.
+* **Rate-Limit Resilience**: Implements a 5-model Gemini rotation (Primary: `gemini-3.0-flash`) to gracefully bypass free-tier API quotas.
 * **Wealth Manager Persona**: Analyzes data and calculates "Confidence Scores" and listing gains. Provides explicit **FULL APPLY**, **MODERATE**, or **AVOID** decisions based on risk and demand (GMP%).
 * **Professional HTML Dashboard**: Generates an interactive, token-optimized report of the top 15 actionable (open/upcoming) IPOs.
 
