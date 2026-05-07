@@ -62,7 +62,9 @@ def clean_and_parse_json(text):
 def generate_with_fallback(prompt):
     """Tries multiple Gemini models in sequence to bypass rate limits."""
     models_to_try = [
-        'gemini-3-flash-preview',          
+        'gemini-3-flash-preview'
+        'gemini-3-flash'
+        'gemini-3.1-flash-preview',          
         'gemini-2.5-flash',        
         'gemini-3.1-flash-lite-preview',   
         'gemini-2.5-flash-lite',   
